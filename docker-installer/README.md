@@ -18,7 +18,7 @@ chmod +x install-docker.sh
 sudo ./install-docker.sh
 
 # 方法二：直接运行（不保存文件）
-curl -fsSL https://raw.githubusercontent.com/你的用户名/stable-docker-installer/main/install-stable-docker.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/pkdg503/docker-installer/main/docker-installer/install-stable-docker.sh | sudo bash
 ```
 
 ## 🔧 手动安装步骤
