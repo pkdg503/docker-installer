@@ -23,11 +23,11 @@ Docker 已安装并运行
 
 🛠️ 安装与使用
 1. 下载脚本
-bash
+#bash
 wget -O mtproxy-manager.sh https://raw.githubusercontent.com/your-repo/mtproxy-manager/main/mtproxy-manager.sh
 chmod +x mtproxy-manager.sh
 2. 运行脚本
-bash
+#bash
 ./mtproxy-manager.sh
 📖 使用指南
 主菜单界面
