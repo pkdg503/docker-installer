@@ -159,6 +159,21 @@ get_next_container_name() {
     echo "$container_name"
 }
 
+# 解析逗号分隔的输入
+parse_comma_separated_input() {
+    local input="$1"
+    local default_value="$2"
+    local -n result_array=$3
+    
+    # 如果输入为空，使用默认值
+    if [ -z "$input" ]; then
+        input="$default_value"
+    fi
+    
+    # 清除空格并按逗号分割
+    IFS=',' read -ra result_array <<< "${input// /}"
+}
+
 # 获取批量部署配置
 get_batch_config() {
     echo -e "\n${BLUE}📋 批量部署配置${NC}"
@@ -178,21 +193,54 @@ get_batch_config() {
     # 获取基础配置
     echo -e "\n${CYAN}🎯 基础配置（将应用于所有容器）${NC}"
     
-    read -p "请输入基础伪装域名（默认 cloudflare.com）: " base_domain
-    base_domain=${base_domain:-cloudflare.com}
+    echo -e "${YELLOW}💡 提示：可以输入多个值，用英文逗号分隔。如果数量不足将循环使用。${NC}"
     
-    read -p "请输入起始 HTTP 端口（默认 8081）: " base_http_port
-    base_http_port=${base_http_port:-8081}
+    # 获取伪装域名
+    read -p "请输入伪装域名（默认 cloudflare.com，多个用逗号分隔）: " domains_input
+    local -a domains_array
+    parse_comma_separated_input "$domains_input" "cloudflare.com" domains_array
     
-    read -p "请输入起始 HTTPS 端口（默认 8443）: " base_https_port
-    base_https_port=${base_https_port:-8443}
+    # 获取HTTP端口
+    read -p "请输入 HTTP 端口（默认 8081，多个用逗号分隔）: " http_ports_input
+    local -a http_ports_array
+    parse_comma_separated_input "$http_ports_input" "8081" http_ports_array
+    
+    # 获取HTTPS端口
+    read -p "请输入 HTTPS 端口（默认 8443，多个用逗号分隔）: " https_ports_input
+    local -a https_ports_array
+    parse_comma_separated_input "$https_ports_input" "8443" https_ports_array
+    
+    # 获取容器名称前缀
+    read -p "请输入容器名称前缀（默认 nginx-mtproxy）: " name_prefix
+    name_prefix=${name_prefix:-nginx-mtproxy}
+    
+    # 显示配置预览
+    echo -e "\n${GREEN}📊 配置预览：${NC}"
+    echo -e "  ${CYAN}容器数量: ${container_count}${NC}"
+    echo -e "  ${CYAN}伪装域名: ${domains_array[*]}${NC}"
+    echo -e "  ${CYAN}HTTP端口: ${http_ports_array[*]}${NC}"
+    echo -e "  ${CYAN}HTTPS端口: ${https_ports_array[*]}${NC}"
+    echo -e "  ${CYAN}容器前缀: ${name_prefix}${NC}"
     
     # 生成所有容器配置
     container_configs=()
     for ((i=0; i<container_count; i++)); do
+        # 循环使用域名
+        local domain_index=$((i % ${#domains_array[@]}))
+        local domain="${domains_array[$domain_index]}"
+        
+        # 循环使用HTTP端口
+        local http_port_index=$((i % ${#http_ports_array[@]}))
+        local base_http_port="${http_ports_array[$http_port_index]}"
         local http_port=$((base_http_port + i))
+        
+        # 循环使用HTTPS端口
+        local https_port_index=$((i % ${#https_ports_array[@]}))
+        local base_https_port="${https_ports_array[$https_port_index]}"
         local https_port=$((base_https_port + i))
-        local container_name=$(get_next_container_name)
+        
+        # 生成容器名称
+        local container_name="${name_prefix}${i}"
         
         # 检查端口是否可用
         while ! check_port_available "$http_port" "$container_name"; do
@@ -205,10 +253,10 @@ get_batch_config() {
             https_port=$((https_port + 1))
         done
         
-        container_configs+=("$container_name:$http_port:$https_port:$base_domain")
+        container_configs+=("$container_name:$http_port:$https_port:$domain")
     done
     
-    # 显示配置预览
+    # 显示部署配置预览
     echo -e "\n${GREEN}📊 部署配置预览：${NC}"
     for config in "${container_configs[@]}"; do
         IFS=':' read -r name http_port https_port domain <<< "$config"
@@ -300,12 +348,19 @@ show_deployment_result() {
     
     if [ $successful_deployments -gt 0 ]; then
         echo -e "\n${YELLOW}📋 部署详情：${NC}"
-        printf "${CYAN}%-20s %-12s %-12s %s${NC}\n" "容器名称" "HTTP端口" "HTTPS端口" "Secret"
-        echo "${CYAN}────────────────────────────────────────────────────────────${NC}"
+        printf "${CYAN}%-20s %-12s %-12s %-15s %s${NC}\n" "容器名称" "HTTP端口" "HTTPS端口" "伪装域名" "Secret"
+        echo "${CYAN}─────────────────────────────────────────────────────────────────────────${NC}"
         
         for config in "${deployed_containers[@]}"; do
             IFS=':' read -r name http_port https_port secret <<< "$config"
-            printf "%-20s %-12s %-12s %s\n" "$name" "$http_port" "$https_port" "$secret"
+            # 从container_configs中获取域名
+            for container_config in "${container_configs[@]}"; do
+                IFS=':' read -r c_name c_http c_https c_domain <<< "$container_config"
+                if [ "$c_name" = "$name" ]; then
+                    printf "%-20s %-12s %-12s %-15s %s\n" "$name" "$http_port" "$https_port" "$c_domain" "$secret"
+                    break
+                fi
+            done
         done
         
         echo -e "\n${GREEN}🔧 管理命令：${NC}"
