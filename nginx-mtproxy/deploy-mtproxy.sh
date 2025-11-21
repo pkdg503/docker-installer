@@ -11,6 +11,7 @@ NC='\033[0m'
 # 全局变量
 declare -a deployed_containers
 declare -a container_configs
+declare -a https_links
 IMAGE_NAME="ellermister/nginx-mtproxy:latest"
 
 # 显示标题函数
@@ -174,6 +175,18 @@ parse_comma_separated_input() {
     IFS=',' read -ra result_array <<< "${input// /}"
 }
 
+# 获取服务器IP地址
+get_server_ip() {
+    local ip
+    # 尝试多种方法获取公网IP
+    ip=$(curl -s -4 --connect-timeout 5 ip.sb 2>/dev/null || 
+         curl -s -4 --connect-timeout 5 ifconfig.me 2>/dev/null || 
+         curl -s -4 --connect-timeout 5 icanhazip.com 2>/dev/null ||
+         hostname -I 2>/dev/null | awk '{print $1}' ||
+         echo "YOUR_SERVER_IP")
+    echo "$ip"
+}
+
 # 获取批量部署配置
 get_batch_config() {
     echo -e "\n${BLUE}📋 批量部署配置${NC}"
@@ -193,22 +206,37 @@ get_batch_config() {
     # 获取基础配置
     echo -e "\n${CYAN}🎯 基础配置（将应用于所有容器）${NC}"
     
-    echo -e "${YELLOW}💡 提示：可以输入多个值，用英文逗号分隔。如果数量不足将循环使用。${NC}"
-    
     # 获取伪装域名
-    read -p "请输入伪装域名（默认 cloudflare.com，多个用逗号分隔）: " domains_input
-    local -a domains_array
-    parse_comma_separated_input "$domains_input" "cloudflare.com" domains_array
+    read -p "请输入伪装域名（默认 cloudflare.com）: " domain
+    domain=${domain:-cloudflare.com}
     
-    # 获取HTTP端口
-    read -p "请输入 HTTP 端口（默认 8081，多个用逗号分隔）: " http_ports_input
-    local -a http_ports_array
-    parse_comma_separated_input "$http_ports_input" "8081" http_ports_array
+    # 获取起始HTTP端口
+    while true; do
+        read -p "请输入起始 HTTP 端口（默认 8081）: " start_http_port
+        start_http_port=${start_http_port:-8081}
+        
+        if [[ "$start_http_port" =~ ^[0-9]+$ ]] && [ "$start_http_port" -ge 1024 ] && [ "$start_http_port" -le 65535 ]; then
+            break
+        else
+            echo -e "${RED}❌ 请输入 1024-65535 之间的有效端口号${NC}"
+        fi
+    done
     
-    # 获取HTTPS端口
-    read -p "请输入 HTTPS 端口（默认 8443，多个用逗号分隔）: " https_ports_input
-    local -a https_ports_array
-    parse_comma_separated_input "$https_ports_input" "8443" https_ports_array
+    # 获取起始HTTPS端口
+    while true; do
+        read -p "请输入起始 HTTPS 端口（默认 8443）: " start_https_port
+        start_https_port=${start_https_port:-8443}
+        
+        if [[ "$start_https_port" =~ ^[0-9]+$ ]] && [ "$start_https_port" -ge 1024 ] && [ "$start_https_port" -le 65535 ]; then
+            if [ "$start_https_port" -eq "$start_http_port" ]; then
+                echo -e "${RED}❌ HTTPS 端口不能与 HTTP 端口相同${NC}"
+            else
+                break
+            fi
+        else
+            echo -e "${RED}❌ 请输入 1024-65535 之间的有效端口号${NC}"
+        fi
+    done
     
     # 获取容器名称前缀
     read -p "请输入容器名称前缀（默认 nginx-mtproxy）: " name_prefix
@@ -217,29 +245,16 @@ get_batch_config() {
     # 显示配置预览
     echo -e "\n${GREEN}📊 配置预览：${NC}"
     echo -e "  ${CYAN}容器数量: ${container_count}${NC}"
-    echo -e "  ${CYAN}伪装域名: ${domains_array[*]}${NC}"
-    echo -e "  ${CYAN}HTTP端口: ${http_ports_array[*]}${NC}"
-    echo -e "  ${CYAN}HTTPS端口: ${https_ports_array[*]}${NC}"
+    echo -e "  ${CYAN}伪装域名: ${domain}${NC}"
+    echo -e "  ${CYAN}起始HTTP端口: ${start_http_port}${NC}"
+    echo -e "  ${CYAN}起始HTTPS端口: ${start_https_port}${NC}"
     echo -e "  ${CYAN}容器前缀: ${name_prefix}${NC}"
     
     # 生成所有容器配置
     container_configs=()
     for ((i=0; i<container_count; i++)); do
-        # 循环使用域名
-        local domain_index=$((i % ${#domains_array[@]}))
-        local domain="${domains_array[$domain_index]}"
-        
-        # 循环使用HTTP端口
-        local http_port_index=$((i % ${#http_ports_array[@]}))
-        local base_http_port="${http_ports_array[$http_port_index]}"
-        local http_port=$((base_http_port + i))
-        
-        # 循环使用HTTPS端口
-        local https_port_index=$((i % ${#https_ports_array[@]}))
-        local base_https_port="${https_ports_array[$https_port_index]}"
-        local https_port=$((base_https_port + i))
-        
-        # 生成容器名称
+        local http_port=$((start_http_port + i))
+        local https_port=$((start_https_port + i))
         local container_name="${name_prefix}${i}"
         
         # 检查端口是否可用
@@ -270,6 +285,55 @@ get_batch_config() {
         echo -e "${YELLOW}⏹️  取消部署${NC}"
         exit 0
     fi
+}
+
+# 获取容器HTTPS链接
+get_https_link() {
+    local container_name=$1
+    local secret=$2
+    local https_port=$3
+    local domain=$4
+    
+    # 获取服务器IP
+    local server_ip=$(get_server_ip)
+    
+    # 生成HTTPS链接
+    local https_link="https://${domain}:${https_port}/${secret}/"
+    
+    echo "$https_link"
+}
+
+# 从容器日志中提取HTTPS链接信息
+extract_https_info_from_logs() {
+    local container_name=$1
+    local max_attempts=5
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        echo -e "${YELLOW}⏳ 尝试获取 ${container_name} 的HTTPS链接 (${attempt}/${max_attempts})...${NC}"
+        
+        # 获取容器日志
+        local container_logs=$(docker logs "$container_name" 2>&1 | tail -20)
+        
+        # 从日志中提取secret和链接信息
+        if echo "$container_logs" | grep -q "Secret:"; then
+            local secret=$(echo "$container_logs" | grep "Secret:" | awk '{print $2}' | head -1)
+            local link_info=$(echo "$container_logs" | grep -E "https?://" | head -1)
+            
+            if [ -n "$secret" ] && [ -n "$link_info" ]; then
+                echo -e "${GREEN}✅ 成功获取 ${container_name} 的配置信息${NC}"
+                echo "$link_info"
+                return 0
+            fi
+        fi
+        
+        # 等待后重试
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    echo -e "${RED}❌ 无法从 ${container_name} 的日志中获取HTTPS链接${NC}"
+    return 1
 }
 
 # 部署单个容器函数
@@ -315,13 +379,24 @@ deploy_single_container() {
         "$IMAGE_NAME"; then
         
         # 等待容器启动
-        sleep 3
+        echo -e "${YELLOW}⏳ 等待容器启动...${NC}"
+        sleep 5
         
         # 检查容器状态
         local status=$(docker ps --filter "name=${container_name}" --format "{{.Status}}")
         if [ -n "$status" ]; then
             echo -e "${GREEN}✅ 容器 ${container_name} 部署成功！状态: ${status}${NC}"
-            deployed_containers+=("$container_name:$http_port:$https_port:$secret")
+            
+            # 获取HTTPS链接信息
+            echo -e "${YELLOW}🔍 获取HTTPS链接信息...${NC}"
+            local https_link=$(get_https_link "$container_name" "$secret" "$https_port" "$domain")
+            
+            # 尝试从日志中获取更多信息
+            local log_info=$(extract_https_info_from_logs "$container_name")
+            
+            deployed_containers+=("$container_name:$http_port:$https_port:$secret:$domain")
+            https_links+=("$container_name:$https_link:$log_info")
+            
             return 0
         else
             echo -e "${RED}❌ 容器 ${container_name} 启动失败${NC}"
@@ -347,22 +422,37 @@ show_deployment_result() {
     echo -e "${GREEN}✅ 成功部署: ${successful_deployments}/${total_attempts} 个容器${NC}"
     
     if [ $successful_deployments -gt 0 ]; then
+        # 显示部署详情表格
         echo -e "\n${YELLOW}📋 部署详情：${NC}"
-        printf "${CYAN}%-20s %-12s %-12s %-15s %s${NC}\n" "容器名称" "HTTP端口" "HTTPS端口" "伪装域名" "Secret"
-        echo "${CYAN}─────────────────────────────────────────────────────────────────────────${NC}"
+        printf "${CYAN}%-20s %-12s %-12s %-15s %-34s %s${NC}\n" "容器名称" "HTTP端口" "HTTPS端口" "伪装域名" "Secret" "HTTPS链接"
+        echo "${CYAN}────────────────────────────────────────────────────────────────────────────────────────────────────────────${NC}"
         
         for config in "${deployed_containers[@]}"; do
-            IFS=':' read -r name http_port https_port secret <<< "$config"
-            # 从container_configs中获取域名
-            for container_config in "${container_configs[@]}"; do
-                IFS=':' read -r c_name c_http c_https c_domain <<< "$container_config"
-                if [ "$c_name" = "$name" ]; then
-                    printf "%-20s %-12s %-12s %-15s %s\n" "$name" "$http_port" "$https_port" "$c_domain" "$secret"
+            IFS=':' read -r name http_port https_port secret domain <<< "$config"
+            
+            # 查找对应的HTTPS链接
+            local https_link=""
+            for link_info in "${https_links[@]}"; do
+                IFS=':' read -r link_name link_url log_msg <<< "$link_info"
+                if [ "$link_name" = "$name" ]; then
+                    https_link="$link_url"
                     break
                 fi
             done
+            
+            printf "%-20s %-12s %-12s %-15s %-34s %s\n" "$name" "$http_port" "$https_port" "$domain" "$secret" "$https_link"
         done
         
+        # 显示从日志中提取的信息
+        echo -e "\n${YELLOW}🔗 从容器日志中提取的链接信息：${NC}"
+        for link_info in "${https_links[@]}"; do
+            IFS=':' read -r name https_link log_msg <<< "$link_info"
+            if [ -n "$log_msg" ] && [ "$log_msg" != "null" ]; then
+                echo -e "${CYAN}● ${name}: ${log_msg}${NC}"
+            fi
+        done
+        
+        # 显示管理命令
         echo -e "\n${GREEN}🔧 管理命令：${NC}"
         echo -e "查看所有容器: ${YELLOW}docker ps -a --filter 'name=nginx-mtproxy'${NC}"
         echo -e "查看日志:      ${YELLOW}docker logs <容器名称>${NC}"
@@ -370,7 +460,11 @@ show_deployment_result() {
         echo -e "启动容器:      ${YELLOW}docker start <容器名称>${NC}"
         echo -e "删除容器:      ${YELLOW}docker rm -f <容器名称>${NC}"
         
-        echo -e "\n${YELLOW}💡 提示：请妥善保存上面的 Secret 信息，配置客户端时需要用到${NC}"
+        echo -e "\n${YELLOW}💡 提示：${NC}"
+        echo -e "  • 请妥善保存上面的 Secret 和 HTTPS 链接信息"
+        echo -e "  • 可以使用 HTTPS 链接直接配置客户端"
+        echo -e "  • 确保服务器防火墙已开放端口: ${start_http_port}-$((start_http_port + total_attempts - 1)) 和 ${start_https_port}-$((start_https_port + total_attempts - 1))"
+        
     fi
 }
 
