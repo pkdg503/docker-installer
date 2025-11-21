@@ -11,7 +11,7 @@ NC='\033[0m'
 # 全局变量
 declare -a deployed_containers
 declare -a container_configs
-declare -a https_links
+declare -A https_links_map  # 使用关联数组存储链接信息
 IMAGE_NAME="ellermister/nginx-mtproxy:latest"
 
 # 显示标题函数
@@ -263,7 +263,7 @@ get_batch_config() {
             http_port=$((http_port + 1))
         done
         
-        while ! check_port_available "$https_port" "$container_name" || [ "$https_port" -eq "$http_port" ]; do
+        while ! check_port_available "$https_port" "$container_name" || [ "$https_port" -eq "$http_port" ]; then
             echo -e "${YELLOW}⚠️  HTTPS 端口 ${https_port} 不可用，尝试 ${https_port}+1${NC}"
             https_port=$((https_port + 1))
         done
@@ -303,22 +303,20 @@ get_https_link() {
     echo "$https_link"
 }
 
-# 从容器日志中提取HTTPS链接信息
+# 从单个容器日志中提取HTTPS链接信息
 extract_https_info_from_logs() {
     local container_name=$1
-    local max_attempts=5
+    local max_attempts=3
     local attempt=1
     
     while [ $attempt -le $max_attempts ]; do
-        echo -e "${YELLOW}⏳ 尝试获取 ${container_name} 的HTTPS链接 (${attempt}/${max_attempts})...${NC}"
-        
-        # 获取容器日志
+        # 获取容器日志的最后20行
         local container_logs=$(docker logs "$container_name" 2>&1 | tail -20)
         
         # 从日志中提取secret和链接信息
         if echo "$container_logs" | grep -q "Secret:"; then
             local secret=$(echo "$container_logs" | grep "Secret:" | awk '{print $2}' | head -1)
-            local link_info=$(echo "$container_logs" | grep -E "https?://" | head -1)
+            local link_info=$(echo "$container_logs" | grep -E "https?://" | head -1 | tr -d '[:space:]')
             
             if [ -n "$secret" ] && [ -n "$link_info" ]; then
                 echo -e "${GREEN}✅ 成功获取 ${container_name} 的配置信息${NC}"
@@ -327,13 +325,48 @@ extract_https_info_from_logs() {
             fi
         fi
         
-        # 等待后重试
-        sleep 2
+        # 如果没找到，等待后重试
+        if [ $attempt -lt $max_attempts ]; then
+            sleep 2
+        fi
         attempt=$((attempt + 1))
     done
     
-    echo -e "${RED}❌ 无法从 ${container_name} 的日志中获取HTTPS链接${NC}"
+    echo -e "${YELLOW}⚠️  无法从 ${container_name} 的日志中获取HTTPS链接，使用生成的链接${NC}"
     return 1
+}
+
+# 批量获取所有容器的HTTPS链接信息
+batch_get_https_links() {
+    echo -e "\n${BLUE}🔍 批量获取容器HTTPS链接信息...${NC}"
+    
+    local total_containers=${#deployed_containers[@]}
+    local current=1
+    
+    for config in "${deployed_containers[@]}"; do
+        IFS=':' read -r container_name http_port https_port secret domain <<< "$config"
+        
+        echo -e "${YELLOW}⏳ 获取 ${container_name} 的链接信息 (${current}/${total_containers})...${NC}"
+        
+        # 生成基础HTTPS链接
+        local base_https_link=$(get_https_link "$container_name" "$secret" "$https_port" "$domain")
+        
+        # 尝试从日志中获取实际链接
+        local log_link_info=$(extract_https_info_from_logs "$container_name")
+        
+        # 存储链接信息
+        if [ -n "$log_link_info" ] && [ "$log_link_info" != "null" ]; then
+            https_links_map["$container_name"]="$log_link_info"
+            echo -e "${GREEN}✅ 从日志获取: ${log_link_info}${NC}"
+        else
+            https_links_map["$container_name"]="$base_https_link"
+            echo -e "${CYAN}📋 使用生成链接: ${base_https_link}${NC}"
+        fi
+        
+        current=$((current + 1))
+    done
+    
+    echo -e "${GREEN}✅ 所有容器链接信息获取完成${NC}"
 }
 
 # 部署单个容器函数
@@ -380,23 +413,13 @@ deploy_single_container() {
         
         # 等待容器启动
         echo -e "${YELLOW}⏳ 等待容器启动...${NC}"
-        sleep 5
+        sleep 3
         
         # 检查容器状态
         local status=$(docker ps --filter "name=${container_name}" --format "{{.Status}}")
         if [ -n "$status" ]; then
             echo -e "${GREEN}✅ 容器 ${container_name} 部署成功！状态: ${status}${NC}"
-            
-            # 获取HTTPS链接信息
-            echo -e "${YELLOW}🔍 获取HTTPS链接信息...${NC}"
-            local https_link=$(get_https_link "$container_name" "$secret" "$https_port" "$domain")
-            
-            # 尝试从日志中获取更多信息
-            local log_info=$(extract_https_info_from_logs "$container_name")
-            
             deployed_containers+=("$container_name:$http_port:$https_port:$secret:$domain")
-            https_links+=("$container_name:$https_link:$log_info")
-            
             return 0
         else
             echo -e "${RED}❌ 容器 ${container_name} 启动失败${NC}"
@@ -422,6 +445,9 @@ show_deployment_result() {
     echo -e "${GREEN}✅ 成功部署: ${successful_deployments}/${total_attempts} 个容器${NC}"
     
     if [ $successful_deployments -gt 0 ]; then
+        # 批量获取所有容器的HTTPS链接信息
+        batch_get_https_links
+        
         # 显示部署详情表格
         echo -e "\n${YELLOW}📋 部署详情：${NC}"
         printf "${CYAN}%-20s %-12s %-12s %-15s %-34s %s${NC}\n" "容器名称" "HTTP端口" "HTTPS端口" "伪装域名" "Secret" "HTTPS链接"
@@ -430,26 +456,10 @@ show_deployment_result() {
         for config in "${deployed_containers[@]}"; do
             IFS=':' read -r name http_port https_port secret domain <<< "$config"
             
-            # 查找对应的HTTPS链接
-            local https_link=""
-            for link_info in "${https_links[@]}"; do
-                IFS=':' read -r link_name link_url log_msg <<< "$link_info"
-                if [ "$link_name" = "$name" ]; then
-                    https_link="$link_url"
-                    break
-                fi
-            done
+            # 从关联数组中获取HTTPS链接
+            local https_link="${https_links_map[$name]}"
             
             printf "%-20s %-12s %-12s %-15s %-34s %s\n" "$name" "$http_port" "$https_port" "$domain" "$secret" "$https_link"
-        done
-        
-        # 显示从日志中提取的信息
-        echo -e "\n${YELLOW}🔗 从容器日志中提取的链接信息：${NC}"
-        for link_info in "${https_links[@]}"; do
-            IFS=':' read -r name https_link log_msg <<< "$link_info"
-            if [ -n "$log_msg" ] && [ "$log_msg" != "null" ]; then
-                echo -e "${CYAN}● ${name}: ${log_msg}${NC}"
-            fi
         done
         
         # 显示管理命令
@@ -463,7 +473,7 @@ show_deployment_result() {
         echo -e "\n${YELLOW}💡 提示：${NC}"
         echo -e "  • 请妥善保存上面的 Secret 和 HTTPS 链接信息"
         echo -e "  • 可以使用 HTTPS 链接直接配置客户端"
-        echo -e "  • 确保服务器防火墙已开放端口: ${start_http_port}-$((start_http_port + total_attempts - 1)) 和 ${start_https_port}-$((start_https_port + total_attempts - 1))"
+        echo -e "  • 确保服务器防火墙已开放相关端口"
         
     fi
 }
@@ -483,7 +493,6 @@ main() {
     for config in "${container_configs[@]}"; do
         deploy_single_container "$config" "$current" "$total_containers"
         current=$((current + 1))
-        echo -e "${BLUE}────────────────────────────────────────────────────────────${NC}"
     done
     
     show_deployment_result "$total_containers"
