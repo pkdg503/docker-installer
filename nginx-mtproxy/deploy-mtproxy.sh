@@ -206,9 +206,13 @@ get_batch_config() {
     # 获取基础配置
     echo -e "\n${CYAN}🎯 基础配置（将应用于所有容器）${NC}"
     
-    # 获取伪装域名
-    read -p "请输入伪装域名（默认 cloudflare.com）: " domain
-    domain=${domain:-cloudflare.com}
+    # 获取伪装域名（支持逗号分隔）
+    read -p "请输入伪装域名（多个用逗号分隔，默认 cloudflare.com）: " domains_input
+    domains_input=${domains_input:-cloudflare.com}
+    
+    # 解析域名数组
+    local -a domains_array
+    parse_comma_separated_input "$domains_input" "cloudflare.com" domains_array
     
     # 获取起始HTTP端口
     while true; do
@@ -245,7 +249,7 @@ get_batch_config() {
     # 显示配置预览
     echo -e "\n${GREEN}📊 配置预览：${NC}"
     echo -e "  ${CYAN}容器数量: ${container_count}${NC}"
-    echo -e "  ${CYAN}伪装域名: ${domain}${NC}"
+    echo -e "  ${CYAN}伪装域名: ${domains_array[*]}${NC}"
     echo -e "  ${CYAN}起始HTTP端口: ${start_http_port}${NC}"
     echo -e "  ${CYAN}起始HTTPS端口: ${start_https_port}${NC}"
     echo -e "  ${CYAN}容器前缀: ${name_prefix}${NC}"
@@ -257,13 +261,17 @@ get_batch_config() {
         local https_port=$((start_https_port + i))
         local container_name="${name_prefix}${i}"
         
+        # 循环使用域名（如果域名数量少于容器数量，则循环使用）
+        local domain_index=$((i % ${#domains_array[@]}))
+        local domain="${domains_array[$domain_index]}"
+        
         # 检查端口是否可用
         while ! check_port_available "$http_port" "$container_name"; do
             echo -e "${YELLOW}⚠️  HTTP 端口 ${http_port} 不可用，尝试 ${http_port}+1${NC}"
             http_port=$((http_port + 1))
         done
         
-        # 修复这里的语法错误：使用 do 而不是 then
+        # 检查HTTPS端口是否可用
         while ! check_port_available "$https_port" "$container_name" || [ "$https_port" -eq "$http_port" ]; do
             echo -e "${YELLOW}⚠️  HTTPS 端口 ${https_port} 不可用，尝试 ${https_port}+1${NC}"
             https_port=$((https_port + 1))
