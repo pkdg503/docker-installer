@@ -1,40 +1,35 @@
+# MTProxy 批量部署脚本
 
-MTProxy 批量部署脚本
 一个用于快速批量部署 Telegram MTProxy 代理的自动化脚本。
 
-功能特点
-🚀 一键批量部署多个 MTProxy 容器
+## 功能特点
+🚀 **一键批量部署多个 MTProxy 容器**  
+🔒 **自动生成安全的随机密钥**  
+🌐 **支持多个伪装域名循环使用**  
+🔧 **智能端口管理和冲突检测**  
+📱 **自动生成 Telegram 一键链接**  
+🎨 **彩色终端输出，操作直观**
 
-🔒 自动生成安全的随机密钥
+## 系统要求
+- Linux 服务器
+- Docker 已安装并运行
+- curl 工具
+- 开放所需端口范围
 
-🌐 支持多个伪装域名循环使用
+## 快速开始
 
-🔧 智能端口管理和冲突检测
+1. **下载脚本**
+   ```bash
+   wget -O mtproxy-batch-deploy.sh https://raw.githubusercontent.com/your-repo/mtproxy-batch-deploy/main/mtproxy-batch-deploy.sh
+   chmod +x mtproxy-batch-deploy.sh
+运行脚本
 
-📱 自动生成 Telegram 一键链接
-
-🎨 彩色终端输出，操作直观
-
-系统要求
-Linux 服务器
-
-Docker 已安装并运行
-
-curl 工具
-
-开放所需端口范围
-
-快速开始
-1. 下载脚本
 bash
-wget -O mtproxy-batch-deploy.sh https://raw.githubusercontent.com/your-repo/mtproxy-batch-deploy/main/mtproxy-batch-deploy.sh
-chmod +x mtproxy-batch-deploy.sh
-2. 运行脚本
-bash
+复制代码
 ./mtproxy-batch-deploy.sh
 使用流程
 第一步：环境检查
-脚本会自动检查：
+脚本会自动检查以下内容：
 
 ✅ Docker 是否安装和运行
 
@@ -78,11 +73,13 @@ bash
 配置示例
 基础配置
 text
+复制代码
 容器数量: 3
 起始端口: 49286
 伪装域名: microsoft.com,apple.com,google.com
 自定义端口配置
 text
+复制代码
 容器数量: 3
 自定义端口: 49286,49288,49290
 伪装域名: cloudflare.com,amazon.com
@@ -90,25 +87,36 @@ text
 部署完成后显示：
 
 text
+复制代码
 容器名称   端口     伪装域名       Secret                              TG代理链接
 mtproxy0   49286   microsoft.com  a1b2c3d4e5f6...  https://t.me/proxy?server=1.2.3.4&port=49286&secret=...
 mtproxy1   49287   apple.com      b2c3d4e5f6g7...  https://t.me/proxy?server=1.2.3.4&port=49287&secret=...
 mtproxy2   49288   google.com     c3d4e5f6g7h8...  https://t.me/proxy?server=1.2.3.4&port=49288&secret=...
 管理命令
+查看所有容器
+
 bash
-# 查看所有容器
+复制代码
 docker ps -a --filter 'name=mtproxy'
+查看容器日志
 
-# 查看容器日志
+bash
+复制代码
 docker logs mtproxy0
+停止容器
 
-# 停止容器
+bash
+复制代码
 docker stop mtproxy0
+启动容器
 
-# 启动容器
+bash
+复制代码
 docker start mtproxy0
+删除容器
 
-# 删除容器
+bash
+复制代码
 docker rm -f mtproxy0
 技术特性
 安全特性
@@ -161,4 +169,5 @@ v1.1 - 增加端口冲突检测和域名循环使用
 
 v1.2 - 优化执行速度和错误处理
 
-提示：请遵守当地法律法规，仅将本脚本用于合法用途。
+提示
+请遵守当地法律法规，仅将本脚本用于合法用途。
